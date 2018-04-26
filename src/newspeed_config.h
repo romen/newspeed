@@ -1,0 +1,39 @@
+#ifndef HEADER_NEWSPEED_CONFIG_H
+#define HEADER_NEWSPEED_CONFIG_H
+
+#define SAMPLING_INTEL_WHITEPAPER 1
+#define SAMPLING_SUPERCOP 2
+#define SAMPLING_MODIFIED_SUPERCOP 3
+#define SAMPLING_PERF 4
+
+#define SAMPLING SAMPLING_PERF
+
+//#define NOOP
+#define HYPERLOOP 7 // 2^HYPERLOOP iterations per sample
+//#undef HYPERLOOP
+
+//#define CALIBRATE
+//#define CALIBRATE_INCREASE_RESOLUTION 10
+
+#define OP_DEFAULT_OUT_COUNT 1
+#define OP_DEFAULT_IN_COUNT 100
+
+#define ENABLE_OP_EVP_DIGESTSIGN
+
+// FIXME: should we move it to CMake ?
+/**
+ * 0.9.4          0x0090400f
+ * 1.2.3z         0x102031af
+ */
+#include <openssl/opensslv.h>
+#if OPENSSL_VERSION_NUMBER < 0x10101000L
+	#ifndef NO_EVP_DIGESTSIGN
+		#define NO_EVP_DIGESTSIGN
+	#endif /* NO_EVP_DIGESTSIGN */
+#endif /* OPENSSL_VERSION_NUMBER */
+
+#ifdef NO_EVP_DIGESTSIGN
+	#undef ENABLE_OP_EVP_DIGESTSIGN
+#endif /* NO_EVP_DIGESTSIGN */
+
+#endif /* HEADER_NEWSPEED_CONFIG_H */
