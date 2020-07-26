@@ -6,7 +6,7 @@
 #define SAMPLING_MODIFIED_SUPERCOP 3
 #define SAMPLING_PERF 4
 
-#define SAMPLING SAMPLING_PERF
+#define SAMPLING SAMPLING_SUPERCOP
 
 //#define NOOP
 #define HYPERLOOP 7 // 2^HYPERLOOP iterations per sample

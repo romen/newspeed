@@ -9,7 +9,7 @@
 #include "apps.h"
 #include <string.h>
 #if !defined(OPENSSL_SYS_MSDOS)
-# include OPENSSL_UNISTD
+# include <unistd.h>
 #endif
 
 #include <stdlib.h>

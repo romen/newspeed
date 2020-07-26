@@ -163,6 +163,8 @@ EVP_PKEY *_EVP_PKEY_keygen_wrapper(const int type, int arg2,
 
     // {{{ KEY GENERATION ----------
     if (params != NULL) {
+	if (type == EVP_PKEY_EC && !EVP_PKEY_set_alias_type(params, EVP_PKEY_EC))
+            goto evp_keygen_err;
         kctx = EVP_PKEY_CTX_new(params, engine);
     } else {
         /* Create context for the key generation */
@@ -195,6 +197,8 @@ EVP_PKEY *_EVP_PKEY_keygen_wrapper(const int type, int arg2,
                    "%s: Failure in key generation\n", OBJ_nid2sn(type));
         goto evp_keygen_err;
     }
+    if (type == EVP_PKEY_EC && !EVP_PKEY_set_alias_type(pkey, EVP_PKEY_EC))
+        goto evp_keygen_err;
     // }}} ---------- KEY GENERATION
 
     goto evp_keygen_end;
@@ -218,9 +222,11 @@ evp_keygen_end:
     return pkey;
 }
 
-int EVP_PKEY_name_parser(int *_nid, int *_subparam, ENGINE **_e, const char *name)
+
+
+name_parser_st EVP_PKEY_name_parser(int *_nid, int *_subparam, ENGINE **_e, const char **fname, const char *name)
 {
-    int rt = 0;
+    name_parser_st rt = error;
     int nid = NID_undef;
     const char * arg2;
     int subparam = 0;
@@ -242,6 +248,23 @@ int EVP_PKEY_name_parser(int *_nid, int *_subparam, ENGINE **_e, const char *nam
         //((char *)name)[12] = '\0';
         arg2 = &name[13];
         subparam = (int)strtol(arg2, NULL, 10);
+    } else if (fname != NULL && len > 15 && !strncmp(name, "PEM_PARAM_FILE:", 15)) {
+        const char *p = &name[15];
+        const char *_fname = NULL;
+
+        if (len > 18 && !strncmp(p, "EC:", 3)) {
+            _fname = &p[3];
+            // FIXME: support more types of params (DH,DSA)
+        } else {
+            return error;
+        }
+
+        *fname = _fname;
+        return ec_params_file;
+    } else if (fname != NULL && len > 13 && !strncmp(name, "PEM_KEY_FILE:", 13)) {
+        const char *_fname = &name[13];
+        *fname = _fname;
+        return key_file;
     } else {
         nid = OBJ_sn2nid(name);
         subparam = 0;
@@ -257,10 +280,70 @@ int EVP_PKEY_name_parser(int *_nid, int *_subparam, ENGINE **_e, const char *nam
     *_nid = nid;
     *_subparam = subparam;
     *_e = e;
-    rt = 1;
-end:
+    rt = success;
+ end:
     return rt;
 }
+
+EC_GROUP *EC_GROUP_new_from_ecparams_fname(const char *fname)
+{
+    EC_GROUP *group = NULL;
+    BIO *bio = NULL;
+
+    if (NULL == (bio = BIO_new_file(fname, "r")))
+        goto end;
+    if (NULL == (group = PEM_read_bio_ECPKParameters(bio, NULL, NULL, NULL)))
+        goto end;
+
+ end:
+    BIO_free(bio);
+    return group;
+}
+
+EVP_PKEY *EVP_PKEY_new_from_ecparams_fname(const char *fname)
+{
+    EVP_PKEY *pkey = NULL, *ret = NULL;
+    EC_KEY *eckey = NULL;
+    EC_GROUP *group = NULL;
+
+    if (NULL == (group = EC_GROUP_new_from_ecparams_fname(fname)))
+        goto end;
+    if (NULL == (eckey = EC_KEY_new())
+            || NULL == (pkey = EVP_PKEY_new()))
+        goto end;
+    if (!EC_KEY_set_group(eckey, group))
+        goto end;
+    if (!EC_KEY_generate_key(eckey))
+        goto end;
+    if (!EVP_PKEY_set1_EC_KEY(pkey, eckey))
+        goto end;
+
+    ret = pkey;
+    pkey = NULL;
+
+ end:
+    EVP_PKEY_free(pkey);
+    EC_KEY_free(eckey);
+    EC_GROUP_free(group);
+
+    return ret;
+}
+
+EVP_PKEY *EVP_PKEY_new_private_from_fname(const char *fname)
+{
+    EVP_PKEY *pkey = NULL;
+    BIO *bio = NULL;
+
+    if (NULL == (bio = BIO_new_file(fname, "r")))
+        goto end;
+    if (NULL == (pkey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL)))
+        goto end;
+
+ end:
+    BIO_free(bio);
+    return pkey;
+}
+
 
 void* app_malloc(int sz, const char *what)
 {
