@@ -13,12 +13,23 @@ void apps_init(void);
 ENGINE *setup_engine(const char *engine, int debug);
 void release_engine(ENGINE *e);
 
-int EVP_PKEY_name_parser(int *nid, int *subparam, ENGINE **e, const char *name);
+typedef enum name_parser_enum {
+    error=-1,
+    success=0,
+    key_file=50,
+    ec_params_file,
+} name_parser_st;
+
+name_parser_st EVP_PKEY_name_parser(int *nid, int *subparam, ENGINE **e, const char **fname, const char *in_name);
 
 #define EVP_PKEY_keygen_wrapper(nid,subparam,engine) \
     _EVP_PKEY_keygen_wrapper((nid),(subparam),(engine),NULL)
 
 EVP_PKEY *_EVP_PKEY_keygen_wrapper(const int type, int arg2, ENGINE *engine, EVP_PKEY_CTX **ret_kctx);
+
+EC_GROUP *EC_GROUP_new_from_ecparams_fname(const char *fname);
+EVP_PKEY *EVP_PKEY_new_from_ecparams_fname(const char *fname);
+EVP_PKEY *EVP_PKEY_new_private_from_fname(const char *fname);
 
 size_t EVP_PKEY_get1_PublicKey(const EVP_PKEY *pkey, unsigned char **ptr);
 

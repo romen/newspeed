@@ -12,7 +12,7 @@
 #define EVP_PKEY_VERIFY_OP_DEFAULT_OUT_COUNT OP_DEFAULT_OUT_COUNT
 #define EVP_PKEY_VERIFY_OP_DEFAULT_IN_COUNT  OP_DEFAULT_IN_COUNT
 
-#define EVP_PKEY_SIGNVRFY_INPUT_LEN 20
+#define EVP_PKEY_SIGNVRFY_INPUT_LEN 0x20
 
 extern const char *prog; // newspeed.c
 
@@ -198,6 +198,7 @@ end:
 
 static int op_evp_pkey_signvrfy_init(OPERATION *op, const char *arg)
 {
+    name_parser_st nps = error;
     int ret = 0;
     ENGINE *tmpengine = NULL;
     EVP_PKEY *pkey = NULL;
@@ -208,17 +209,24 @@ static int op_evp_pkey_signvrfy_init(OPERATION *op, const char *arg)
     char *input = NULL;
     size_t inputlen = EVP_PKEY_SIGNVRFY_INPUT_LEN;
     OP_EVP_PKEY_SIGNVRFY_DATA *data = NULL;
+    const char *fname = NULL;
 
-    if (!EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, arg)) {
+    nps = EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, &fname, arg);
+    if (nps == success) {
+        pkey = EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine);
+        if (!pkey) {
+            BIO_printf(bio_err, "%s: Cannot generate key for \"%s\"\n", prog, arg);
+            goto end;
+        }
+    } else if (nps == ec_params_file) {
+        if (NULL == (pkey = EVP_PKEY_new_from_ecparams_fname(fname)))
+            goto end;
+    } else if (nps == key_file) {
+        if (NULL == (pkey = EVP_PKEY_new_private_from_fname(fname)))
+            goto end;
+    } else {
         goto end;
     }
-
-    pkey = EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine);
-    if (!pkey) {
-        BIO_printf(bio_err, "%s: Cannot generate key for \"%s\"\n", prog, arg);
-        goto end;
-    }
-
 
     for (int i=0; i<ITERATIONS_PER_SAMPLE; i++) {
         // Derive signing/verifying context from key
@@ -519,22 +527,58 @@ static int op_evp_pkey_keygen_init(OPERATION *op, const char *arg)
     int nid = NID_undef;
     int subparam = 0;
     OP_EVP_PKEY_KEYGEN_DATA *data = NULL;
+    name_parser_st nps = error;
+    const char *fname = NULL;
 
-    if (!EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, arg)) {
+    nps = EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, &fname, arg);
+    if (nps == success) {
+        pkey = _EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine, &kgen_ctx);
+        if (!pkey || !kgen_ctx) {
+            BIO_printf(bio_err, "%s: Cannot generate keygen context for \"%s\"\n", prog, arg);
+            goto end;
+        }
+    } else if (nps == ec_params_file || nps == key_file) {
+        if (nps == key_file) {
+            pkey = EVP_PKEY_new_private_from_fname(fname);
+        } else {
+            pkey = EVP_PKEY_new_from_ecparams_fname(fname);
+        }
+        if (NULL == pkey)
+            goto end;
+
+        if (NULL == (kgen_ctx = EVP_PKEY_CTX_new(pkey, NULL))) {
+            BIO_printf(bio_err, "%s: Failure in keygen ctx generation\n", fname);
+            goto end;
+        }
+
+        if (!EVP_PKEY_keygen_init(kgen_ctx)) {
+            BIO_printf(bio_err, "%s: Failure in keygen init\n", fname);
+            goto end;
+        }
+        
+        /* free the key read from the file system */
+        EVP_PKEY_free(pkey);
+        pkey = NULL;
+
+        /*
+         * generate a new key using the same parameters to ensure
+         * kgen_ctx can be used
+         */
+        if (!EVP_PKEY_keygen(kgen_ctx, &pkey)) {
+            BIO_printf(bio_err, "%s: Failure in key generation\n", fname);
+            goto end;
+        }
+    } else {
         goto end;
     }
 
-    pkey = _EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine, &kgen_ctx);
-    if (!pkey || !kgen_ctx) {
-        BIO_printf(bio_err, "%s: Cannot generate keygen context for \"%s\"\n", prog, arg);
-        goto end;
-    }
 
     if ( NULL == (data = app_malloc(sizeof(*data), "OP_EVP_PKEY_KEYGEN_DATA"))) {
         goto end;
     }
     memset(data, 0, sizeof(*data));
     data->kgen_ctx = kgen_ctx;
+    kgen_ctx = NULL;
 
     op->data = data;
     op->alg_name = arg;
@@ -551,6 +595,11 @@ end:
 
     if (ret!= 1) {
         ERR_print_errors (bio_err);
+    }
+
+    if (kgen_ctx != NULL) {
+        EVP_PKEY_CTX_free(kgen_ctx);
+        kgen_ctx = NULL;
     }
 
     if (pkey != NULL) {
@@ -628,6 +677,7 @@ static int op_evp_pkey_derive_setup(OPERATION *op)
         BIO_printf(bio_err, "EVP_PKEY_derive_set_peer() failed\n");
         goto end;
     }
+    EVP_PKEY_CTX_ctrl_str(data->dctx[0], "ukmhex", "0100000000000000");
 
     if (!EVP_PKEY_derive(data->dctx[0], NULL, &buflen)) {
         BIO_printf(bio_err, "Failed to determine shared secret length\n");
@@ -668,6 +718,10 @@ static int op_evp_pkey_derive_setup(OPERATION *op)
         BIO_printf(bio_err, "failed to derivation set peer key for testing\n");
         goto end;
     }
+
+    ERR_set_mark();
+    EVP_PKEY_CTX_ctrl_str(testctx, "ukmhex", "0100000000000000");
+    ERR_pop_to_mark();
 
     if (!EVP_PKEY_derive(testctx, NULL, &buflen2)) {
         BIO_printf(bio_err, "unable to determine shared secret length\n");
@@ -746,6 +800,7 @@ end:
 static int op_evp_pkey_derive_run(int i, void *arg)
 {
     OP_EVP_PKEY_DERIVE_DATA *data = arg;
+    EVP_PKEY_CTX_ctrl_str(data->dctx[i], "ukmhex", "0100000000000000");
     return EVP_PKEY_derive(data->dctx[i], data->shared_secret, &(data->buflen));
 }
 
@@ -802,28 +857,69 @@ static int op_evp_pkey_derive_init(OPERATION *op, const char *arg)
     int nid = NID_undef;
     int subparam = 0;
     OP_EVP_PKEY_DERIVE_DATA *data = NULL;
+    const char *fname = NULL;
+    name_parser_st nps = error;
 
-    if (!EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, arg)) {
+   nps = EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, &fname, arg);
+    if (nps == success) {
+        pkey[0] = _EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine, &kgen_ctx);
+        if (!pkey[0] || !kgen_ctx) {
+            BIO_printf(bio_err, "%s: Cannot generate keygen context for \"%s\"\n", prog, arg);
+            goto end;
+        }
+    } else if (nps == ec_params_file || nps == key_file) {
+        if (nps == key_file) {
+            pkey[0] = EVP_PKEY_new_private_from_fname(fname);
+        } else {
+            pkey[0] = EVP_PKEY_new_from_ecparams_fname(fname);
+        }
+        if (NULL == pkey[0])
+            goto end;
+
+        if (NULL == (kgen_ctx = EVP_PKEY_CTX_new(pkey[0], NULL))) {
+            BIO_printf(bio_err, "%s: Failure in keygen ctx generation\n", fname);
+            goto end;
+        }
+
+        if (!EVP_PKEY_keygen_init(kgen_ctx)) {
+            BIO_printf(bio_err, "%s: Failure in keygen init\n", fname);
+            goto end;
+        }
+        
+        /* free the key read from the file system */
+        EVP_PKEY_free(pkey[0]);
+        pkey[0] = NULL;
+
+        /*
+         * generate a new key using the same parameters to ensure
+         * kgen_ctx can be used
+         */
+        if (!EVP_PKEY_keygen(kgen_ctx, &pkey[0])) {
+            BIO_printf(bio_err, "%s: Failure in key generation\n", fname);
+            goto end;
+        }
+    } else {
         goto end;
     }
 
-    pkey[0] = _EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine, &kgen_ctx);
-    if (!pkey[0] || !kgen_ctx) {
-        BIO_printf(bio_err, "%s: Cannot generate keygen context for \"%s\"\n", prog, arg);
-        goto end;
-    }
-
+ 
     for(int i=1; i<OP_EVP_PKEY_DERIVE_DATA_KEYS; i++) {
         if (!EVP_PKEY_keygen(kgen_ctx, &(pkey[i]))) {
             BIO_printf(bio_err, "Key generation failed\n");
             goto end;
         }
+        if (strncmp("EVP_PKEY_EC:SM2", arg, 15) == 0
+            && !EVP_PKEY_set_alias_type(pkey[i], EVP_PKEY_EC))
+            goto end;
     }
     for(int i=0; i<OP_EVP_PKEY_DERIVE_DATA_PEERKEYS; i++) {
         if (!EVP_PKEY_keygen(kgen_ctx, &(peerkey[i]))) {
             BIO_printf(bio_err, "Peer key generation failed\n");
             goto end;
         }
+        if (strncmp("EVP_PKEY_EC:SM2", arg, 15) == 0
+            && !EVP_PKEY_set_alias_type(peerkey[i], EVP_PKEY_EC))
+            goto end;
     }
 
     for (int i=0; i<ITERATIONS_PER_SAMPLE; i++) {
@@ -831,6 +927,9 @@ static int op_evp_pkey_derive_init(OPERATION *op, const char *arg)
             BIO_printf(bio_err, "%s: Cannot generate derivation context for \"%s\"\n", prog, arg);
             goto end;
         }
+        ERR_set_mark();
+        EVP_PKEY_CTX_ctrl_str(dctx[i], "ukmhex", "0100000000000000");
+        ERR_pop_to_mark();
     }
 
     if ( NULL == (data = app_malloc(sizeof(*data), "OP_EVP_PKEY_DERIVE_DATA"))) {
@@ -1010,14 +1109,23 @@ static int op_evp_digestsignvrfy_init(OPERATION *op, const char *arg)
     char *input = NULL;
     size_t inputlen = EVP_PKEY_SIGNVRFY_INPUT_LEN;
     OP_EVP_DIGESTSIGNVRFY_DATA *data = NULL;
+    const char *fname = NULL;
+    name_parser_st nps = error;
 
-    if (!EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, arg)) {
-        goto end;
-    }
-
-    pkey = EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine);
-    if (!pkey) {
-        BIO_printf(bio_err, "%s: Cannot generate key for \"%s\"\n", prog, arg);
+    nps = EVP_PKEY_name_parser(&nid, &subparam, &tmpengine, &fname, arg);
+    if (nps == success) {
+        pkey = EVP_PKEY_keygen_wrapper(nid, subparam, tmpengine);
+        if (!pkey) {
+            BIO_printf(bio_err, "%s: Cannot generate key for \"%s\"\n", prog, arg);
+            goto end;
+        }
+    } else if (nps == ec_params_file) {
+        if (NULL == (pkey = EVP_PKEY_new_from_ecparams_fname(fname)))
+            goto end;
+    } else if (nps == key_file) {
+        if (NULL == (pkey = EVP_PKEY_new_private_from_fname(fname)))
+            goto end;
+    } else {
         goto end;
     }
 
